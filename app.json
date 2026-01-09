@@ -1,0 +1,38 @@
+{
+    "expo": {
+        "name": "Blood Donation App",
+        "slug": "blood-donation-app",
+        "version": "1.0.0",
+        "orientation": "portrait",
+        "userInterfaceStyle": "light",
+        "splash": {
+            "resizeMode": "contain",
+            "backgroundColor": "#E53E3E"
+        },
+        "assetBundlePatterns": [
+            "**/*"
+        ],
+        "ios": {
+            "supportsTablet": true,
+            "bundleIdentifier": "com.blooddonation.app"
+        },
+        "android": {
+            "adaptiveIcon": {
+                "backgroundColor": "#E53E3E"
+            },
+            "package": "com.blooddonation.app",
+            "permissions": [
+                "ACCESS_FINE_LOCATION",
+                "ACCESS_COARSE_LOCATION",
+                "CAMERA",
+                "READ_EXTERNAL_STORAGE",
+                "WRITE_EXTERNAL_STORAGE"
+            ]
+        },
+        "plugins": [
+            "expo-location",
+            "expo-notifications",
+            "expo-image-picker"
+        ]
+    }
+}
