@@ -2,7 +2,7 @@
  * Blood Requests List Screen
  * Displays blood requests with two tabs: Receiving and Sending
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
     View,
     Text,
@@ -12,6 +12,7 @@ import {
     RefreshControl,
     Alert,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { FirestoreService } from '../../data/firebase/firestoreService';
 import { AuthService } from '../../data/firebase/authService';
 import { useChatController } from '../../controllers/ChatController';
@@ -38,57 +39,24 @@ export const BloodRequestsListScreen: React.FC<BloodRequestsListScreenProps> = (
     const [refreshing, setRefreshing] = useState(false);
     const { getOrCreateChat } = useChatController();
     const [userNamesCache, setUserNamesCache] = useState<Record<string, string>>({});
+    const [currentUserBloodGroup, setCurrentUserBloodGroup] = useState<string | null>(null);
 
+    // Clear state when user changes
     useEffect(() => {
-        init();
-    }, []);
-
-    // Refetch names when requests change and we have sentTo users
-    useEffect(() => {
-        const fetchMissingNames = async () => {
-            const userIdsToFetch = new Set<string>();
-            bloodRequests.forEach(req => {
-                if (req.sentTo && !userNamesCache[req.sentTo]) {
-                    userIdsToFetch.add(req.sentTo);
-                }
-                if (req.acceptedBy && !userNamesCache[req.acceptedBy]) {
-                    userIdsToFetch.add(req.acceptedBy);
-                }
-            });
-
-            if (userIdsToFetch.size > 0) {
-                const namesCache: Record<string, string> = { ...userNamesCache };
-                for (const userId of userIdsToFetch) {
-                    try {
-                        const user = await FirestoreService.getUser(userId);
-                        if (user) {
-                            namesCache[userId] = user.name;
-                            console.log(`✅ [BloodRequestsListScreen] Fetched missing name for ${userId}: ${user.name}`);
-                        }
-                    } catch (error) {
-                        console.error(`❌ [BloodRequestsListScreen] Failed to fetch user ${userId}:`, error);
-                    }
-                }
-                setUserNamesCache(namesCache);
+        const checkUserChange = async () => {
+            const userId = await AuthService.getCurrentUserId();
+            if (userId !== currentUserId && currentUserId !== null) {
+                // User changed - clear all state
+                console.log('🔄 [BloodRequestsListScreen] User changed, clearing state');
+                setBloodRequests([]);
+                setUserNamesCache({});
+                setCurrentUserBloodGroup(null);
             }
         };
+        checkUserChange();
+    }, [currentUserId]);
 
-        if (bloodRequests.length > 0) {
-            fetchMissingNames();
-        }
-    }, [bloodRequests]);
-
-    const init = async () => {
-        try {
-            const userId = await AuthService.getCurrentUserId();
-            setCurrentUserId(userId);
-            await fetchBloodRequests();
-        } catch (error) {
-            console.error('Failed to initialize:', error);
-        }
-    };
-
-    const fetchBloodRequests = async () => {
+    const fetchBloodRequests = useCallback(async () => {
         try {
             setIsLoading(true);
             const requests = await FirestoreService.getBloodRequests();
@@ -128,7 +96,72 @@ export const BloodRequestsListScreen: React.FC<BloodRequestsListScreenProps> = (
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [userNamesCache]);
+
+    // Re-initialize when screen comes into focus (handles user login/logout)
+    useFocusEffect(
+        useCallback(() => {
+            const refreshData = async () => {
+                try {
+                    const userId = await AuthService.getCurrentUserId();
+                    setCurrentUserId(userId);
+
+                    // Fetch current user's blood group for filtering broadcast requests
+                    if (userId) {
+                        try {
+                            const user = await FirestoreService.getUser(userId);
+                            if (user && user.bloodGroup) {
+                                setCurrentUserBloodGroup(user.bloodGroup);
+                            }
+                        } catch (error) {
+                            console.error('Failed to fetch current user blood group:', error);
+                        }
+                    }
+
+                    await fetchBloodRequests();
+                } catch (error) {
+                    console.error('Failed to refresh data:', error);
+                }
+            };
+            refreshData();
+        }, [fetchBloodRequests])
+    );
+
+    // Refetch names when requests change and we have sentTo users
+    useEffect(() => {
+        const fetchMissingNames = async () => {
+            const userIdsToFetch = new Set<string>();
+            bloodRequests.forEach(req => {
+                if (req.sentTo && !userNamesCache[req.sentTo]) {
+                    userIdsToFetch.add(req.sentTo);
+                }
+                if (req.acceptedBy && !userNamesCache[req.acceptedBy]) {
+                    userIdsToFetch.add(req.acceptedBy);
+                }
+            });
+
+            if (userIdsToFetch.size > 0) {
+                const namesCache: Record<string, string> = { ...userNamesCache };
+                for (const userId of userIdsToFetch) {
+                    try {
+                        const user = await FirestoreService.getUser(userId);
+                        if (user) {
+                            namesCache[userId] = user.name;
+                            console.log(`✅ [BloodRequestsListScreen] Fetched missing name for ${userId}: ${user.name}`);
+                        }
+                    } catch (error) {
+                        console.error(`❌ [BloodRequestsListScreen] Failed to fetch user ${userId}:`, error);
+                    }
+                }
+                setUserNamesCache(namesCache);
+            }
+        };
+
+        if (bloodRequests.length > 0) {
+            fetchMissingNames();
+        }
+    }, [bloodRequests]);
+
 
     const onRefresh = async () => {
         setRefreshing(true);
@@ -144,11 +177,23 @@ export const BloodRequestsListScreen: React.FC<BloodRequestsListScreenProps> = (
             // Show requests sent by current user
             return bloodRequests.filter((req) => req.requesterId === currentUserId);
         } else {
-            // Show requests received by current user (not sent by current user)
-            // Show all statuses: Pending, Accepted, etc.
-            return bloodRequests.filter(
-                (req) => req.requesterId !== currentUserId
-            );
+            // Show requests received by current user:
+            // 1. Requests specifically sent TO this user (sentTo === currentUserId)
+            // 2. Broadcast requests (no sentTo) where blood group matches current user
+            return bloodRequests.filter((req) => {
+                // Don't show requests sent by current user
+                if (req.requesterId === currentUserId) return false;
+
+                // Show if request was specifically sent to this user
+                if (req.sentTo === currentUserId) return true;
+
+                // Show broadcast requests (no sentTo) if blood group matches
+                if (!req.sentTo && currentUserBloodGroup && req.bloodGroup === currentUserBloodGroup) {
+                    return true;
+                }
+
+                return false;
+            });
         }
     };
 
